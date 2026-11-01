@@ -1,98 +1,72 @@
-**>>WARNNING ON SCAMS IN ISSUES COMMENT SECTION<<**
+# pump-fun-bot
 
-The issues comment section is often targeted by scam bots willing to redirect you to an external resource and drain your funds.
+An experimental high-frequency trading bot for [pump.fun](https://pump.fun) tokens on Solana, written in Rust.
 
-I have enabled a GitHub actions script to detect the common patterns and tag them, which obviously is not 100% accurate.
+> **Archived / demonstration only.** This project is no longer developed. It is shared to show the approach, not as something to run with real money. Trading freshly launched meme tokens is extremely risky, and most of them go to zero.
 
-This is also why you will see deleted comments in the issues—I only delete the scam bot comments targeting your private keys.
+## What it does
 
-The official maintainers are in the [MAINTAINERS.md](MAINTAINERS.md) file.
+The bot is split into small binaries that talk over ZeroMQ and log everything to PostgreSQL:
 
-Not everyone is a scammer though, sometimes there are helpful outside devs who comment and I absolutely appreciate it.
+| Binary | Purpose |
+| --- | --- |
+| `detector` | Subscribes to Solana over WebSocket, watches the pump.fun program for new token launches and publishes them on a ZeroMQ socket. |
+| `trader` | Subscribes to new tokens, follows each token's bonding curve and runs the active strategies from the database (buy signal, sell signal, stop loss, minimum liquidity, max hold time). It buys and sells through pump.fun's on-chain program. |
+| `analyze` | Prints per-strategy performance: runs, outcomes, SOL invested, margin and average ROI. |
+| `backtest` | Replays recorded price data against strategy parameters. |
 
-**>>END OF WARNING<<**
+Other pieces:
 
-For the full walkthrough, see [Solana: Creating a trading and sniping pump.fun bot](https://docs.chainstack.com/docs/solana-creating-a-pumpfun-bot).
+- `src/pump_fun_client.rs`: builds pump.fun buy/sell instructions and works out costs and values from the bonding curve, with failover across several RPC endpoints.
+- `migrations/`: the PostgreSQL schema (strategies, tokens, prices, trades, timings, outcomes, skips).
+- `learning-examples/`: the Python scripts this project started from, taken from [chainstacklabs/pump-fun-bot](https://github.com/chainstacklabs/pump-fun-bot). The git history before this project's commits is theirs.
+- `utils/`: small Node helpers (a raw WebSocket listener, and a base58 → Rust byte-array converter for pubkeys).
 
-For near-instantaneous transaction propagation, you can use the [Chainstack Solana Trader nodes](https://docs.chainstack.com/docs/trader-nodes).
+## Running it (if you really want to)
 
-[Sign up with Chainstack](https://console.chainstack.com).
+`DRY_RUN` in `src/config.rs` is `true` by default. In that mode trades are only simulated and logged, and a throwaway keypair is generated at startup.
 
-Make sure you have the required packages installed `pip install -r requirements.txt`.
+1. Start Postgres: `docker compose up -d`
+2. Copy `.env.example` to `.env` and set `DATABASE_URL`, `RPC_ENDPOINTS` and `WSS_ENDPOINTS` (comma-separated; the public Solana endpoints are rate-limited and too slow for this).
+3. Apply migrations: `cargo install sqlx-cli && sqlx migrate run` (see [DATABASE.md](DATABASE.md)).
+4. Build: `cargo build --release`. sqlx checks queries at compile time, so the database must be running and migrated.
+5. Run `detector` and `trader` in separate terminals, then `analyze` to see results.
 
-Make sure you have your endpoints set up in `config.py`.
+Live trading needs `DRY_RUN = false` and a Solana keypair at `key.json` (a JSON array of 64 bytes, as written by `solana-keygen`). That file is gitignored. Never commit it.
 
-## Note on limits
+## Development notes
 
-Solana is an amazing piece of web3 architecture, but it's also very complex to maintain.
+Notes from when the project was active. Most of the TODOs were never done.
 
-Chainstack is daily (literally, including weekends) working on optimizing our Solana infrastructure to make it the best in the industry.
+### Best parameters found
 
-That said, all node providers have their own setup recommendations & limits, like method availability, requests per second (RPS), free and paid plan specific limitations and so on.
+- Buy amount: 0.0405 SOL (profit: 0.0095 SOL)
+- Min SOL liquidity: 0.40 SOL
+- Buy signal: 1.50%
+- Min volatility: 0.00
+- Sell signal: 6.10%
+- Stop loss: 5.00%
 
-So please make sure you consult the docs of the node provider you are going to use for the bot here. And obviously the public RPC nodes won't work for the heavier use case scenarios like this bot.
+### Strategy ideas
 
-For Chainstack, all of the details and limits you need to be aware of are consolidated here: [Limits](https://docs.chainstack.com/docs/limits) <— we are _always_ keeping this piece up to date so you can rely on it.
+- Trade on long-lived tokens
+- Liquidity modifier for max hold time
+- Dynamic transaction fees and loop timing
+- Atomic buy/sell with Jito bundles
+- Buy immediately at launch
+- Keyword and copycat tokens and their profitability
+- Creator blacklist/whitelist based on past profitability
 
-## Changelog
+### Performance and maintenance
 
-Quick note on a couple on a few new scripts in `/learning-examples`:
+- Track performance per RPC client
+- Dual WebSocket connections with deduplication and failover
+- Pre-sign buy/sell transactions; create token accounts early
+- Move to tokio workers for scaling
+- Send transactions directly to validators, co-locate with RPC nodes, or run a validator
+- Exponential backoff, and turn off strategies that become unprofitable
+- Track CAD prices for tax
 
-*(this is basically a changelog now)*
+## License
 
-Also, here's a quick doc: [Listening to pump.fun migrations to Raydium](https://docs.chainstack.com/docs/solana-listening-to-pumpfun-migrations-to-raydium)
-
-## Bonding curve state check
-
-`check_boding_curve_status.py` — checks the state of the bonding curve associated with a token. When the bonding curve state is completed, the token is migrated to Raydium.
-
-To run:
-
-`python check_boding_curve_status.py TOKEN_ADDRESS`
-
-## Listening to the Raydium migration
-
-When the bonding curve state completes, the liquidity and the token graduate to Raydium.
-
-`listen_to_raydium_migration.py` — listens to the migration events of the tokens from pump_fun to Raydium and prints the signature of the migration, the token address, and the liquidity pool address on Raydium.
-
-Note that it's using the [blockSubscribe]([url](https://docs.chainstack.com/reference/blocksubscribe-solana)) method that not all providers support, but Chainstack does and I (although obviously biased) found it pretty reliable.
-
-To run:
-
-`python listen_to_raydium_migration.py`
-
-**The following two new additions are based on this question [associatedBondingCurve #26](https://github.com/chainstacklabs/pump-fun-bot/issues/26)**
-
-You can take the compute the associatedBondingCurve address following the [Solana docs PDA](https://solana.com/docs/core/pda) description logic. Take the following as input *as seed* (order seems to matter):
-
-- bondingCurve address
-- the Solana system token program address: `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`
-- the token mint address
-
-And compute against the Solana system associated token account program address: `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL`.
-
-The implications of this are kinda huge:
-* you can now use `logsSubscribe` to snipe the tokens and you are not limited to the `blockSubscribe` method
-* see which one is faster
-* not every provider supports `blockSubscribe` on lower tier plans or at all, but everyone supports `logsSubscribe`
-
-The following script showcase the implementation.
-
-## Compute associated bonding curve
-
-`compute_associated_bonding_curve.py` — computes the associated bonding curve for a given token.    
-
-To run:
-
-`python compute_associated_bonding_curve.py` and then enter the token mint address.
-
-## Listen to new direct full details
-
-`listen_new_direct_full_details.py` — listens to the new direct full details events and prints the signature, the token address, the user, the bonding curve address, and the associated bonding curve address using just the `logsSubscribe` method. Basically everything you need for sniping using just `logsSubscribe` and no extra calls like doing `getTransaction` to get the missing data. It's just computed on the fly now.
-
-To run:
-
-`python listen_new_direct_full_details.py`
-
-So now you can run `listen_create_from_blocksubscribe.py` and `listen_new_direct_full_details.py` at the same time and see which one is faster.
+No license is granted for the original code in this repository. The `learning-examples/` code and earlier history come from [chainstacklabs/pump-fun-bot](https://github.com/chainstacklabs/pump-fun-bot) and are under that project's terms.

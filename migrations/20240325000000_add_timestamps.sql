@@ -1,0 +1,11 @@
+-- Add timestamp columns
+ALTER TABLE wallets ADD COLUMN timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE strategy ADD COLUMN timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE outcomes ADD COLUMN timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE skipped ADD COLUMN timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+-- Remove the default constraints after setting initial values
+ALTER TABLE wallets ALTER COLUMN timestamp DROP DEFAULT;
+ALTER TABLE strategy ALTER COLUMN timestamp DROP DEFAULT;
+ALTER TABLE outcomes ALTER COLUMN timestamp DROP DEFAULT;
+ALTER TABLE skipped ALTER COLUMN timestamp DROP DEFAULT; 
